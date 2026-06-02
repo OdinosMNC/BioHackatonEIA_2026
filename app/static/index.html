@@ -1,0 +1,1283 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OncoVision — Patología Histológica por IA</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <!-- NGL Viewer (visor molecular tipo PyMOL, WebGL) -->
+  <script src="https://unpkg.com/ngl@2.3.1/dist/ngl.js"></script>
+  <style>
+    :root {
+      --accent-1: #a855f7;
+      --accent-2: #06b6d4;
+    }
+    body { background: #0a0a14; font-family: 'Inter', sans-serif; }
+
+    .grad-text {
+      background: linear-gradient(90deg, var(--accent-1), var(--accent-2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .grad-border {
+      border: 1px solid transparent;
+      background-clip: padding-box;
+      position: relative;
+    }
+    .grad-border::before {
+      content: '';
+      position: absolute; inset: -1px;
+      border-radius: inherit;
+      background: linear-gradient(135deg, var(--accent-1), var(--accent-2));
+      z-index: -1;
+    }
+    .card {
+      background: #12121f;
+      border: 1px solid #1e1e35;
+      border-radius: 1rem;
+    }
+    .drop-zone {
+      border: 2px dashed #2d2d55;
+      border-radius: 1rem;
+      transition: all 0.3s;
+      cursor: pointer;
+    }
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: var(--accent-1);
+      background: rgba(168, 85, 247, 0.06);
+    }
+    /* Pulsing badge */
+    @keyframes pulse-red {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.5); }
+      50%       { box-shadow: 0 0 0 10px rgba(239,68,68,0); }
+    }
+    @keyframes pulse-green {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0.5); }
+      50%       { box-shadow: 0 0 0 10px rgba(34,197,94,0); }
+    }
+    .badge-maligno { animation: pulse-red 1.8s infinite; }
+    .badge-benigno { animation: pulse-green 1.8s infinite; }
+
+    /* Scan line loading animation */
+    @keyframes scan {
+      0%   { transform: translateY(0); }
+      100% { transform: translateY(224px); }
+    }
+    .scan-line {
+      position: absolute; left: 0; right: 0; height: 2px;
+      background: linear-gradient(90deg, transparent, var(--accent-2), transparent);
+      animation: scan 1.5s linear infinite;
+    }
+    /* Spinner */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { animation: spin 0.8s linear infinite; }
+
+    /* Confidence bar fill */
+    .conf-bar { transition: width 0.8s cubic-bezier(0.4,0,0.2,1); }
+
+    /* History thumb */
+    .history-thumb { cursor: pointer; transition: all 0.2s; }
+    .history-thumb:hover { transform: scale(1.06); border-color: var(--accent-1); }
+    .history-thumb.active { border-color: var(--accent-2) !important; }
+
+    /* Fade-in animation */
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(16px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .fade-in { animation: fadeInUp 0.5s ease forwards; }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #0a0a14; }
+    ::-webkit-scrollbar-thumb { background: #2d2d55; border-radius: 3px; }
+
+    /* Toggle switch */
+    .toggle-knob { transition: transform 0.2s; }
+    .toggle-on .toggle-knob { transform: translateX(20px); }
+
+    /* ── Tab navigation ── */
+    .tab-btn {
+      position: relative;
+      padding: 0.85rem 1.25rem;
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: #6b7280;
+      border-bottom: 2px solid transparent;
+      transition: color .15s, border-color .15s;
+      cursor: pointer;
+      background: transparent;
+    }
+    .tab-btn:hover { color: #e5e7eb; }
+    .tab-btn.active {
+      color: #fff;
+      border-image: linear-gradient(90deg, var(--accent-1), var(--accent-2)) 1;
+      border-bottom: 2px solid var(--accent-1);
+    }
+
+    /* ── PDB viewer ── */
+    #ngl-viewport {
+      width: 100%;
+      height: 100%;
+      min-height: 540px;
+      border-radius: 0.75rem;
+      background: #050510;
+      position: relative;
+      overflow: hidden;
+    }
+    .pdb-pill {
+      display: inline-flex; align-items: center; gap: 0.4rem;
+      padding: 0.35rem 0.7rem;
+      font-size: 0.7rem;
+      font-family: ui-monospace, SFMono-Regular, monospace;
+      background: #1a1a30;
+      border: 1px solid #2d2d55;
+      border-radius: 9999px;
+      color: #9ca3af;
+    }
+    .pdb-file-item {
+      cursor: pointer;
+      padding: 0.6rem 0.8rem;
+      border-radius: 0.6rem;
+      border: 1px solid #1e1e35;
+      transition: all .15s;
+      background: #0f0f1d;
+    }
+    .pdb-file-item:hover { border-color: var(--accent-1); background: rgba(168,85,247,.05); }
+    .pdb-file-item.active {
+      border-color: transparent;
+      background: linear-gradient(135deg, rgba(168,85,247,.18), rgba(6,182,212,.18));
+      box-shadow: 0 0 0 1px var(--accent-2) inset;
+    }
+    .ctrl-btn {
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: #d1d5db;
+      background: #161628;
+      border: 1px solid #2d2d55;
+      border-radius: 0.5rem;
+      transition: all .15s;
+      text-align: left;
+      cursor: pointer;
+    }
+    .ctrl-btn:hover { border-color: var(--accent-1); color: #fff; }
+    .ctrl-btn.active {
+      color: #fff;
+      background: linear-gradient(135deg, rgba(168,85,247,.22), rgba(6,182,212,.22));
+      border-color: var(--accent-2);
+    }
+    .ctrl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem; }
+    select.pdb-select {
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      font-size: 0.8rem;
+      background: #161628;
+      border: 1px solid #2d2d55;
+      color: #e5e7eb;
+      border-radius: 0.5rem;
+      cursor: pointer;
+    }
+    select.pdb-select:focus { outline: none; border-color: var(--accent-1); }
+    .icon-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 32px; height: 32px;
+      border-radius: 0.5rem;
+      background: rgba(15,15,29,.85);
+      border: 1px solid #2d2d55;
+      color: #9ca3af;
+      cursor: pointer;
+      transition: all .15s;
+      backdrop-filter: blur(8px);
+    }
+    .icon-btn:hover { color: #fff; border-color: var(--accent-1); }
+  </style>
+</head>
+<body class="min-h-screen text-gray-100">
+
+  <!-- HEADER -->
+  <header class="border-b border-[#1e1e35] px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <svg class="w-8 h-8" viewBox="0 0 32 32" fill="none">
+        <polygon points="16,2 30,10 30,22 16,30 2,22 2,10" fill="none" stroke="url(#g)" stroke-width="2"/>
+        <circle cx="16" cy="16" r="5" fill="url(#g)" opacity="0.8"/>
+        <defs>
+          <linearGradient id="g" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#a855f7"/>
+            <stop offset="1" stop-color="#06b6d4"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      <span class="text-xl font-bold grad-text tracking-tight">OncoVision</span>
+      <span class="text-xs text-gray-500 ml-1">Patología Histológica por IA</span>
+    </div>
+    <div class="flex items-center gap-2">
+      <span id="status-dot" class="w-2 h-2 rounded-full bg-yellow-400"></span>
+      <span id="status-text" class="text-xs text-gray-400">Conectando...</span>
+    </div>
+  </header>
+
+  <!-- TAB NAV -->
+  <nav class="border-b border-[#1e1e35] px-4 flex gap-1 max-w-7xl mx-auto">
+    <button id="tab-btn-histo" class="tab-btn active" onclick="switchTab('histo')">
+      <span class="inline-flex items-center gap-2">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/>
+        </svg>
+        Histología
+      </span>
+    </button>
+    <button id="tab-btn-pdb" class="tab-btn" onclick="switchTab('pdb')">
+      <span class="inline-flex items-center gap-2">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M4 4c4 0 4 16 8 16M12 4c4 0 4 16 8 16M5 8h3M16 8h3M5 16h3M16 16h3"/>
+        </svg>
+        Visor Molecular
+      </span>
+    </button>
+  </nav>
+
+  <!-- MAIN GRID -->
+  <main id="tab-histo" class="max-w-7xl mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-3 gap-5">
+
+    <!-- COL 1: Upload + Image viewer -->
+    <div class="flex flex-col gap-4">
+      <div class="card p-4">
+        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">Imagen</h2>
+
+        <!-- Drop zone -->
+        <div id="drop-zone" class="drop-zone flex flex-col items-center justify-center p-6 text-center"
+             onclick="document.getElementById('file-input').click()">
+          <svg class="w-10 h-10 text-[#2d2d55] mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+              d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+          </svg>
+          <p class="text-sm text-gray-500">Arrastra una imagen aquí</p>
+          <p class="text-xs text-gray-600 mt-1">PNG · JPG · hasta 20 MB</p>
+        </div>
+        <input id="file-input" type="file" accept="image/*" class="hidden" />
+
+        <!-- Image preview -->
+        <div id="preview-container" class="mt-3 hidden">
+          <div class="relative rounded-lg overflow-hidden" style="height:224px">
+            <img id="img-original" class="w-full h-full object-cover absolute inset-0" />
+            <img id="img-gradcam"  class="w-full h-full object-cover absolute inset-0 hidden" />
+            <!-- Scan line overlay during analysis -->
+            <div id="scan-overlay" class="absolute inset-0 hidden" style="background:rgba(6,182,212,0.04)">
+              <div class="scan-line"></div>
+            </div>
+          </div>
+
+          <!-- Grad-CAM toggle -->
+          <div id="gradcam-toggle-row" class="hidden mt-2 flex items-center justify-between">
+            <span class="text-xs text-gray-400">Grad-CAM</span>
+            <button id="gradcam-toggle" onclick="toggleGradcam()"
+              class="flex items-center gap-2 text-xs bg-[#1a1a30] px-3 py-1.5 rounded-full border border-[#2d2d55] hover:border-purple-500 transition">
+              <span id="gradcam-label">Activar</span>
+              <div id="toggle-bg" class="relative w-9 h-5 bg-[#2d2d55] rounded-full">
+                <div id="toggle-knob" class="toggle-knob absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full"></div>
+              </div>
+            </button>
+          </div>
+
+          <!-- Analyze button -->
+          <button id="analyze-btn" onclick="analyze()"
+            class="mt-3 w-full py-2.5 rounded-lg font-semibold text-sm
+                   bg-gradient-to-r from-purple-600 to-cyan-500
+                   hover:from-purple-500 hover:to-cyan-400 transition
+                   flex items-center justify-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/>
+            </svg>
+            Analizar tejido
+          </button>
+        </div>
+      </div>
+
+      <!-- Session history -->
+      <div id="history-card" class="card p-4 hidden">
+        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">Historial</h2>
+        <div id="history-list" class="flex gap-2 flex-wrap"></div>
+      </div>
+    </div>
+
+    <!-- COL 2: Results -->
+    <div class="flex flex-col gap-4">
+      <!-- Placeholder when no result -->
+      <div id="result-placeholder" class="card p-6 flex flex-col items-center justify-center text-center" style="min-height:320px">
+        <svg class="w-14 h-14 text-[#2d2d55] mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1"
+            d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/>
+        </svg>
+        <p class="text-gray-600 text-sm">Sube una imagen de biopsia<br>para ver el análisis</p>
+      </div>
+
+      <!-- Loading state -->
+      <div id="result-loading" class="card p-6 flex-col items-center justify-center text-center hidden" style="min-height:320px">
+        <svg class="spinner w-10 h-10 text-purple-500 mb-4" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707M17.657 17.657l-.707-.707M6.343 6.343l-.707-.707"/>
+        </svg>
+        <p class="text-gray-400 text-sm">Analizando tejido histológico...</p>
+        <p class="text-xs text-gray-600 mt-1">Ejecutando EfficientNet-B0 + Grad-CAM</p>
+      </div>
+
+      <!-- Result card -->
+      <div id="result-card" class="card p-5 hidden fade-in">
+        <!-- Binary result badge -->
+        <div class="flex items-center justify-between mb-4">
+          <div>
+            <p class="text-xs text-gray-500 uppercase tracking-wider">Clasificación</p>
+            <div id="binary-badge" class="inline-flex items-center gap-2 mt-1 px-4 py-2 rounded-full text-sm font-bold">
+              <span id="binary-dot" class="w-2.5 h-2.5 rounded-full"></span>
+              <span id="binary-label">—</span>
+            </div>
+          </div>
+          <div class="text-right">
+            <p class="text-xs text-gray-500">Confianza</p>
+            <p id="binary-conf" class="text-3xl font-bold grad-text mt-1">—</p>
+          </div>
+        </div>
+
+        <!-- Confidence bar binary -->
+        <div class="mb-4">
+          <div class="flex justify-between text-xs text-gray-500 mb-1">
+            <span>Benigno</span><span>Maligno</span>
+          </div>
+          <div class="relative h-2 bg-[#1e1e35] rounded-full overflow-hidden">
+            <div id="maligno-bar" class="conf-bar absolute right-0 top-0 bottom-0 bg-red-500 rounded-full" style="width:0%"></div>
+            <div id="benigno-bar" class="conf-bar absolute left-0 top-0 bottom-0 bg-green-500 rounded-full" style="width:0%"></div>
+          </div>
+        </div>
+
+        <hr class="border-[#1e1e35] my-4" />
+
+        <!-- Subtype -->
+        <div class="mb-3">
+          <p class="text-xs text-gray-500 uppercase tracking-wider mb-1">Subtipo histológico</p>
+          <div class="flex items-center justify-between">
+            <p id="subtype-label" class="text-base font-semibold text-white">—</p>
+            <span id="subtype-conf" class="text-sm text-gray-400">—</span>
+          </div>
+          <!-- Subtype confidence bar -->
+          <div class="mt-1.5 h-1.5 bg-[#1e1e35] rounded-full overflow-hidden">
+            <div id="subtype-bar" class="conf-bar h-full rounded-full bg-purple-500" style="width:0%"></div>
+          </div>
+        </div>
+
+        <!-- Magnification -->
+        <div class="flex items-center gap-2 mb-4">
+          <p class="text-xs text-gray-500">Magnificación detectada:</p>
+          <span id="mag-label" class="px-2 py-0.5 text-xs font-mono rounded bg-[#1a1a30] border border-[#2d2d55] text-cyan-400">—</span>
+        </div>
+
+        <!-- Download report -->
+        <button id="download-btn" onclick="downloadReport()"
+          class="w-full mt-1 py-2 rounded-lg text-sm border border-[#2d2d55] text-gray-300
+                 hover:border-purple-500 hover:text-white transition flex items-center justify-center gap-2">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+          </svg>
+          Descargar reporte visual
+        </button>
+      </div>
+
+      <!-- Bio context -->
+      <div id="bio-card" class="card p-5 hidden fade-in">
+        <button onclick="toggleBio()" class="w-full flex items-center justify-between">
+          <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-widest">Contexto Biológico</h2>
+          <svg id="bio-chevron" class="w-4 h-4 text-gray-500 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+          </svg>
+        </button>
+        <p id="bio-text" class="text-sm text-gray-400 leading-relaxed mt-3"></p>
+      </div>
+    </div>
+
+    <!-- COL 3: Probabilities chart -->
+    <div class="flex flex-col gap-4">
+      <div class="card p-5">
+        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-4">Probabilidades por Subtipo</h2>
+        <div id="chart-placeholder" class="flex flex-col items-center justify-center text-center py-10">
+          <svg class="w-10 h-10 text-[#2d2d55] mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+              d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+          </svg>
+          <p class="text-gray-600 text-xs">Esperando análisis...</p>
+        </div>
+        <div id="chart-container" class="hidden" style="position:relative; height:280px">
+          <canvas id="subtypeChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Info card -->
+      <div class="card p-5">
+        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">Acerca del Modelo</h2>
+        <ul class="space-y-2 text-xs text-gray-500">
+          <li class="flex gap-2">
+            <span class="text-purple-400 font-mono">Arch</span>
+            <span>EfficientNet-B0 multi-tarea</span>
+          </li>
+          <li class="flex gap-2">
+            <span class="text-purple-400 font-mono">Dataset</span>
+            <span>BreaKHis v1 — 7 909 imágenes H&amp;E</span>
+          </li>
+          <li class="flex gap-2">
+            <span class="text-cyan-400 font-mono">Tareas</span>
+            <span>Clasificación binaria · 8 subtipos · magnificación</span>
+          </li>
+          <li class="flex gap-2">
+            <span class="text-cyan-400 font-mono">XAI</span>
+            <span>Grad-CAM en bloque final del backbone</span>
+          </li>
+          <li class="flex gap-2 pt-1">
+            <span class="text-gray-600 text-[10px]">⚠ Uso exclusivo en investigación. No constituye diagnóstico médico.</span>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </main>
+
+  <!-- ╔══════════════════════════════════════════════════════════╗ -->
+  <!-- ║  PESTAÑA: VISOR MOLECULAR (tipo PyMOL, basado en NGL)   ║ -->
+  <!-- ╚══════════════════════════════════════════════════════════╝ -->
+  <main id="tab-pdb" class="max-w-7xl mx-auto px-4 py-6 grid grid-cols-1 lg:grid-cols-4 gap-5 hidden">
+
+    <!-- COL 1: Estructuras + info -->
+    <div class="flex flex-col gap-4">
+      <div class="card p-4">
+        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">Estructuras PDB</h2>
+        <div id="pdb-file-list" class="flex flex-col gap-2">
+          <div class="text-xs text-gray-600">Cargando…</div>
+        </div>
+
+        <hr class="border-[#1e1e35] my-4" />
+
+        <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-2">Modo de visualización</h3>
+        <div class="flex flex-col gap-2">
+          <button id="mode-single" class="ctrl-btn active" onclick="setViewMode('single')">
+            Estructura individual
+          </button>
+          <button id="mode-compare" class="ctrl-btn" onclick="setViewMode('compare')">
+            Superponer WT vs MT
+          </button>
+        </div>
+      </div>
+
+      <!-- Info estructural -->
+      <div id="pdb-info-card" class="card p-4">
+        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">Información</h2>
+        <div id="pdb-info-content" class="space-y-2 text-xs">
+          <div class="text-gray-600">Selecciona una estructura…</div>
+        </div>
+      </div>
+
+      <!-- Leyenda comparación -->
+      <div id="pdb-legend" class="card p-4 hidden">
+        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">Leyenda</h2>
+        <div class="flex items-center gap-2 mb-2">
+          <span class="w-3 h-3 rounded-full" style="background:#06b6d4"></span>
+          <span class="text-xs text-gray-300">PALB2_WT — Tipo salvaje</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="w-3 h-3 rounded-full" style="background:#ef4444"></span>
+          <span class="text-xs text-gray-300">PALB2_MT — Mutante</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- COL 2-3: Visor 3D -->
+    <div class="lg:col-span-2 flex flex-col gap-4">
+      <div class="card p-2 relative">
+        <div id="ngl-viewport"></div>
+
+        <!-- Overlay: estado de carga -->
+        <div id="pdb-loader" class="absolute inset-0 flex items-center justify-center bg-[#050510]/80 rounded-xl hidden z-10">
+          <div class="flex flex-col items-center gap-3">
+            <svg class="spinner w-10 h-10 text-purple-500" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707M17.657 17.657l-.707-.707M6.343 6.343l-.707-.707"/>
+            </svg>
+            <p class="text-xs text-gray-400">Cargando estructura…</p>
+          </div>
+        </div>
+
+        <!-- Overlay: placeholder -->
+        <div id="pdb-placeholder" class="absolute inset-0 flex flex-col items-center justify-center text-center px-6 z-0 pointer-events-none">
+          <svg class="w-16 h-16 text-[#2d2d55] mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M4 4c4 0 4 16 8 16M12 4c4 0 4 16 8 16M5 8h3M16 8h3M5 16h3M16 16h3"/>
+          </svg>
+          <p class="text-sm text-gray-500">Selecciona una estructura para visualizarla</p>
+          <p class="text-xs text-gray-600 mt-1">Rueda: zoom · Clic izquierdo: rotar · Clic derecho: trasladar</p>
+        </div>
+
+        <!-- Controles flotantes -->
+        <div class="absolute top-4 right-4 flex flex-col gap-2 z-20">
+          <button class="icon-btn" title="Centrar vista" onclick="recenterView()">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+            </svg>
+          </button>
+          <button id="spin-btn" class="icon-btn" title="Rotación automática" onclick="toggleSpin()">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path d="M21 12a9 9 0 11-3-6.7M21 4v5h-5"/>
+            </svg>
+          </button>
+          <button class="icon-btn" title="Captura PNG" onclick="screenshotPDB()">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
+              <circle cx="12" cy="13" r="4"/>
+            </svg>
+          </button>
+          <button class="icon-btn" title="Pantalla completa" onclick="fullscreenPDB()">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path d="M3 9V3h6M21 9V3h-6M3 15v6h6M21 15v6h-6"/>
+            </svg>
+          </button>
+        </div>
+
+        <!-- Badge inferior con nombre activo -->
+        <div id="pdb-active-badge" class="absolute bottom-4 left-4 pdb-pill hidden z-20"></div>
+      </div>
+    </div>
+
+    <!-- COL 4: Controles de estilo -->
+    <div class="flex flex-col gap-4">
+      <div class="card p-4">
+        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">Representación</h2>
+        <div class="ctrl-grid">
+          <button class="ctrl-btn active" data-repr="cartoon" onclick="setRepresentation('cartoon')">Cartoon</button>
+          <button class="ctrl-btn" data-repr="ribbon" onclick="setRepresentation('ribbon')">Ribbon</button>
+          <button class="ctrl-btn" data-repr="ball+stick" onclick="setRepresentation('ball+stick')">Ball &amp; Stick</button>
+          <button class="ctrl-btn" data-repr="licorice" onclick="setRepresentation('licorice')">Licorice</button>
+          <button class="ctrl-btn" data-repr="spacefill" onclick="setRepresentation('spacefill')">Spacefill</button>
+          <button class="ctrl-btn" data-repr="surface" onclick="setRepresentation('surface')">Superficie</button>
+          <button class="ctrl-btn" data-repr="backbone" onclick="setRepresentation('backbone')">Backbone</button>
+          <button class="ctrl-btn" data-repr="hyperball" onclick="setRepresentation('hyperball')">Hyperball</button>
+        </div>
+      </div>
+
+      <div class="card p-4">
+        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">Esquema de color</h2>
+        <select id="color-scheme" class="pdb-select" onchange="setColorScheme(this.value)">
+          <option value="chainname">Por cadena</option>
+          <option value="residueindex">Por índice de residuo</option>
+          <option value="sstruc">Por estructura secundaria</option>
+          <option value="hydrophobicity">Hidrofobicidad</option>
+          <option value="bfactor">B-factor</option>
+          <option value="element">Por elemento</option>
+          <option value="resname">Por residuo</option>
+          <option value="atomindex">Por índice atómico</option>
+        </select>
+
+        <h3 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mt-4 mb-2">Fondo</h3>
+        <div class="ctrl-grid">
+          <button id="bg-dark" class="ctrl-btn active" onclick="setBackground('#0a0a14')">Oscuro</button>
+          <button id="bg-light" class="ctrl-btn" onclick="setBackground('#f3f4f6')">Claro</button>
+          <button id="bg-black" class="ctrl-btn" onclick="setBackground('#000000')">Negro</button>
+          <button id="bg-white" class="ctrl-btn" onclick="setBackground('#ffffff')">Blanco</button>
+        </div>
+      </div>
+
+      <div class="card p-4">
+        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">Opciones</h2>
+        <label class="flex items-center justify-between text-xs text-gray-300 mb-2 cursor-pointer">
+          <span>Mostrar HETATM (ligandos)</span>
+          <input type="checkbox" id="opt-hetatm" checked onchange="rerender()" class="accent-purple-500" />
+        </label>
+        <label class="flex items-center justify-between text-xs text-gray-300 mb-2 cursor-pointer">
+          <span>Mostrar agua</span>
+          <input type="checkbox" id="opt-water" onchange="rerender()" class="accent-purple-500" />
+        </label>
+        <label class="flex items-center justify-between text-xs text-gray-300 cursor-pointer">
+          <span>Calidad alta</span>
+          <input type="checkbox" id="opt-quality" onchange="rerender()" class="accent-purple-500" />
+        </label>
+      </div>
+
+      <div class="card p-4">
+        <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-widest mb-3">Acerca de</h2>
+        <ul class="space-y-1.5 text-xs text-gray-500">
+          <li class="flex gap-2"><span class="text-purple-400 font-mono">Motor</span><span>NGL Viewer (WebGL)</span></li>
+          <li class="flex gap-2"><span class="text-purple-400 font-mono">Parser</span><span>Biopython (servidor)</span></li>
+          <li class="flex gap-2"><span class="text-cyan-400 font-mono">Gen</span><span>PALB2 — predisposición a cáncer de mama</span></li>
+          <li class="flex gap-2 pt-1"><span class="text-gray-600 text-[10px]">Visor interactivo similar a PyMOL — solo investigación.</span></li>
+        </ul>
+      </div>
+    </div>
+
+  </main>
+
+<script>
+// ── State ─────────────────────────────────────────────
+let currentFile   = null;
+let currentResult = null;
+let gradcamActive = false;
+let bioExpanded   = true;
+let subtypeChart  = null;
+let history       = [];
+
+// ── Health check ──────────────────────────────────────
+async function checkHealth() {
+  try {
+    const r = await fetch('/api/health');
+    const d = await r.json();
+    const dot  = document.getElementById('status-dot');
+    const text = document.getElementById('status-text');
+    if (d.model_loaded) {
+      dot.className  = 'w-2 h-2 rounded-full bg-green-400';
+      text.textContent = 'Modelo listo';
+    } else {
+      dot.className  = 'w-2 h-2 rounded-full bg-yellow-400';
+      text.textContent = 'Modelo cargando...';
+    }
+  } catch {
+    document.getElementById('status-dot').className  = 'w-2 h-2 rounded-full bg-red-500';
+    document.getElementById('status-text').textContent = 'Sin conexión';
+  }
+}
+checkHealth();
+
+// ── Drag & drop ───────────────────────────────────────
+const dropZone = document.getElementById('drop-zone');
+dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+dropZone.addEventListener('dragleave', ()  => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault(); dropZone.classList.remove('dragover');
+  if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+});
+document.getElementById('file-input').addEventListener('change', e => {
+  if (e.target.files[0]) handleFile(e.target.files[0]);
+});
+
+function handleFile(file) {
+  if (!file.type.startsWith('image/')) return alert('Por favor sube una imagen PNG o JPG.');
+  currentFile = file;
+  gradcamActive = false;
+  currentResult = null;
+  resetUI();
+  const reader = new FileReader();
+  reader.onload = e => {
+    document.getElementById('img-original').src = e.target.result;
+    document.getElementById('img-gradcam').src   = '';
+    document.getElementById('preview-container').classList.remove('hidden');
+    document.getElementById('gradcam-toggle-row').classList.add('hidden');
+  };
+  reader.readAsDataURL(file);
+}
+
+function resetUI() {
+  setSection('result-placeholder', true);
+  setSection('result-loading',     false);
+  setSection('result-card',        false);
+  setSection('bio-card',           false);
+  setSection('chart-placeholder',  true);
+  setSection('chart-container',    false);
+}
+
+function setSection(id, show) {
+  const el = document.getElementById(id);
+  if (show) el.classList.remove('hidden');
+  else      el.classList.add('hidden');
+}
+
+// ── Analyze ───────────────────────────────────────────
+async function analyze() {
+  if (!currentFile) return;
+
+  setSection('result-placeholder', false);
+  setSection('result-loading',     true);
+  setSection('result-card',        false);
+  setSection('bio-card',           false);
+  document.getElementById('scan-overlay').classList.remove('hidden');
+
+  const form = new FormData();
+  form.append('file', currentFile);
+
+  try {
+    const resp = await fetch('/api/predict', { method: 'POST', body: form });
+    if (!resp.ok) throw new Error(await resp.text());
+    currentResult = await resp.json();
+    renderResult(currentResult);
+    addHistory(currentResult, currentFile);
+  } catch (err) {
+    setSection('result-loading', false);
+    setSection('result-placeholder', true);
+    alert('Error al analizar: ' + err.message);
+  } finally {
+    document.getElementById('scan-overlay').classList.add('hidden');
+  }
+}
+
+// ── Render result ─────────────────────────────────────
+function renderResult(r) {
+  setSection('result-loading', false);
+
+  const isMaligno = r.binary === 'Maligno';
+  const badge   = document.getElementById('binary-badge');
+  const dot     = document.getElementById('binary-dot');
+  const label   = document.getElementById('binary-label');
+  const conf    = document.getElementById('binary-conf');
+
+  badge.className = `inline-flex items-center gap-2 mt-1 px-4 py-2 rounded-full text-sm font-bold ${isMaligno ? 'bg-red-500/20 text-red-400 badge-maligno' : 'bg-green-500/20 text-green-400 badge-benigno'}`;
+  dot.className   = `w-2.5 h-2.5 rounded-full ${isMaligno ? 'bg-red-500' : 'bg-green-500'}`;
+  label.textContent = r.binary.toUpperCase();
+  conf.textContent  = (r.binary_conf * 100).toFixed(1) + '%';
+
+  // Binary bar
+  const malignoP = (r.probs_binary['Maligno'] * 100).toFixed(1);
+  const benignoP = (r.probs_binary['Benigno'] * 100).toFixed(1);
+  setTimeout(() => {
+    document.getElementById('maligno-bar').style.width = malignoP + '%';
+    document.getElementById('benigno-bar').style.width = benignoP + '%';
+  }, 50);
+
+  // Subtype
+  document.getElementById('subtype-label').textContent = r.subtype;
+  document.getElementById('subtype-conf').textContent  = (r.subtype_conf * 100).toFixed(1) + '%';
+  setTimeout(() => {
+    document.getElementById('subtype-bar').style.width = (r.subtype_conf * 100).toFixed(1) + '%';
+  }, 50);
+
+  // Magnification
+  document.getElementById('mag-label').textContent = r.mag;
+
+  // Bio context
+  document.getElementById('bio-text').textContent = r.bio_context;
+
+  // Grad-CAM image
+  if (r.gradcam_b64) {
+    document.getElementById('img-gradcam').src = 'data:image/png;base64,' + r.gradcam_b64;
+    document.getElementById('gradcam-toggle-row').classList.remove('hidden');
+  }
+
+  // Show sections
+  setSection('result-card', true);
+  setSection('bio-card', true);
+
+  // Chart
+  renderChart(r.probs_subtype);
+}
+
+// ── Chart ─────────────────────────────────────────────
+const SUBTYPE_COLORS = [
+  '#22c55e','#4ade80','#16a34a','#86efac',   // benignos = verde
+  '#ef4444','#f87171','#dc2626','#fca5a5',   // malignos = rojo
+];
+function renderChart(probs) {
+  setSection('chart-placeholder', false);
+  setSection('chart-container',   true);
+
+  const labels = Object.keys(probs);
+  const values = Object.values(probs).map(v => (v * 100).toFixed(1));
+
+  if (subtypeChart) subtypeChart.destroy();
+
+  const ctx = document.getElementById('subtypeChart').getContext('2d');
+  subtypeChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        backgroundColor: SUBTYPE_COLORS,
+        borderRadius: 4,
+        borderSkipped: false,
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: { label: ctx => ' ' + ctx.parsed.x + '%' }
+        }
+      },
+      scales: {
+        x: {
+          min: 0, max: 100,
+          grid: { color: '#1e1e35' },
+          ticks: { color: '#6b7280', callback: v => v + '%' }
+        },
+        y: {
+          grid: { display: false },
+          ticks: { color: '#9ca3af', font: { size: 11 } }
+        }
+      },
+      animation: { duration: 700, easing: 'easeOutQuart' }
+    }
+  });
+}
+
+// ── Grad-CAM toggle ───────────────────────────────────
+function toggleGradcam() {
+  gradcamActive = !gradcamActive;
+  document.getElementById('img-original').classList.toggle('hidden', gradcamActive);
+  document.getElementById('img-gradcam').classList.toggle('hidden', !gradcamActive);
+  document.getElementById('gradcam-label').textContent = gradcamActive ? 'Desactivar' : 'Activar';
+  const bg = document.getElementById('toggle-bg');
+  const knob = document.getElementById('toggle-knob');
+  if (gradcamActive) {
+    bg.style.background = 'linear-gradient(90deg,#a855f7,#06b6d4)';
+    knob.style.transform = 'translateX(16px)';
+  } else {
+    bg.style.background = '#2d2d55';
+    knob.style.transform = 'translateX(0)';
+  }
+}
+
+// ── Bio toggle ────────────────────────────────────────
+function toggleBio() {
+  bioExpanded = !bioExpanded;
+  const text = document.getElementById('bio-text');
+  const chevron = document.getElementById('bio-chevron');
+  text.classList.toggle('hidden', !bioExpanded);
+  chevron.style.transform = bioExpanded ? 'rotate(0deg)' : 'rotate(-90deg)';
+}
+
+// ── History ───────────────────────────────────────────
+function addHistory(result, file) {
+  const reader = new FileReader();
+  reader.onload = e => {
+    const entry = { result, src: e.target.result, id: Date.now() };
+    history.unshift(entry);
+    if (history.length > 5) history.pop();
+    renderHistory();
+    document.getElementById('history-card').classList.remove('hidden');
+  };
+  reader.readAsDataURL(file);
+}
+
+function renderHistory() {
+  const list = document.getElementById('history-list');
+  list.innerHTML = '';
+  history.forEach((h, i) => {
+    const div = document.createElement('div');
+    div.className = 'history-thumb relative rounded-lg overflow-hidden border-2 border-[#2d2d55]';
+    div.style.width = '60px'; div.style.height = '60px';
+    if (i === 0) div.classList.add('active');
+    div.innerHTML = `
+      <img src="${h.src}" class="w-full h-full object-cover" />
+      <div class="absolute bottom-0 left-0 right-0 text-center text-[8px] font-bold py-0.5
+        ${h.result.binary === 'Maligno' ? 'bg-red-600' : 'bg-green-600'} text-white">
+        ${h.result.binary === 'Maligno' ? 'MAL' : 'BEN'}
+      </div>`;
+    div.onclick = () => {
+      document.querySelectorAll('.history-thumb').forEach(t => t.classList.remove('active'));
+      div.classList.add('active');
+      document.getElementById('img-original').src = h.src;
+      document.getElementById('img-gradcam').src = 'data:image/png;base64,' + h.result.gradcam_b64;
+      document.getElementById('preview-container').classList.remove('hidden');
+      currentResult = h.result;
+      renderResult(h.result);
+    };
+    list.appendChild(div);
+  });
+}
+
+// ── Download report (composited image) ───────────────
+function downloadReport() {
+  if (!currentResult) return;
+  const canvas = document.createElement('canvas');
+  canvas.width  = 700;
+  canvas.height = 340;
+  const ctx = canvas.getContext('2d');
+
+  // Background
+  ctx.fillStyle = '#0a0a14';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Title
+  ctx.fillStyle = '#a855f7';
+  ctx.font = 'bold 18px monospace';
+  ctx.fillText(' — Reporte de Análisis', 20, 35);
+
+  const origImg    = new Image(); origImg.src    = document.getElementById('img-original').src;
+  const gradcamImg = new Image(); gradcamImg.src = document.getElementById('img-gradcam').src;
+
+  let loaded = 0;
+  function onLoad() {
+    loaded++;
+    if (loaded < 2) return;
+    // Draw images
+    ctx.drawImage(origImg,    20,  55, 200, 200);
+    ctx.drawImage(gradcamImg, 240, 55, 200, 200);
+
+    // Labels under images
+    ctx.fillStyle = '#6b7280'; ctx.font = '11px sans-serif';
+    ctx.fillText('Imagen original', 20, 270);
+    ctx.fillText('Grad-CAM',       240, 270);
+
+    // Results text
+    const r = currentResult;
+    const isMal = r.binary === 'Maligno';
+    ctx.fillStyle = isMal ? '#ef4444' : '#22c55e';
+    ctx.font = 'bold 22px sans-serif';
+    ctx.fillText(r.binary.toUpperCase(), 460, 90);
+
+    ctx.fillStyle = '#9ca3af'; ctx.font = '12px sans-serif';
+    ctx.fillText(`Confianza: ${(r.binary_conf*100).toFixed(1)}%`, 460, 115);
+    ctx.fillStyle = '#e5e7eb'; ctx.font = 'bold 13px sans-serif';
+    ctx.fillText(r.subtype, 460, 148);
+    ctx.fillStyle = '#9ca3af'; ctx.font = '12px sans-serif';
+    ctx.fillText(`Subtipo conf: ${(r.subtype_conf*100).toFixed(1)}%`, 460, 168);
+    ctx.fillText(`Magnificacion: ${r.mag}`, 460, 190);
+
+    // Bio
+    ctx.fillStyle = '#6b7280'; ctx.font = '10px sans-serif';
+    const words = r.bio_context.split(' ');
+    let line = '', y = 225;
+    words.forEach(w => {
+      const test = line + w + ' ';
+      if (ctx.measureText(test).width > 220 && line) {
+        ctx.fillText(line, 460, y); y += 14; line = w + ' ';
+      } else line = test;
+    });
+    if (line) ctx.fillText(line, 460, y);
+
+    // Footer
+    ctx.fillStyle = '#374151'; ctx.font = '9px sans-serif';
+    ctx.fillText(' · Solo para investigacion · No constituye diagnostico medico', 20, 325);
+
+    // Download
+    const a = document.createElement('a');
+    a.download = `oncovision_${Date.now()}.png`;
+    a.href = canvas.toDataURL('image/png');
+    a.click();
+  }
+  origImg.onload = gradcamImg.onload = onLoad;
+  // Trigger if already cached
+  if (origImg.complete)    onLoad();
+  if (gradcamImg.complete) onLoad();
+}
+
+// ╔═══════════════════════════════════════════════════════════╗
+// ║   TABS + VISOR MOLECULAR (NGL Viewer)                     ║
+// ╚═══════════════════════════════════════════════════════════╝
+
+// ── Tab switching ────────────────────────────────────
+function switchTab(tab) {
+  const isHisto = tab === 'histo';
+  document.getElementById('tab-histo').classList.toggle('hidden', !isHisto);
+  document.getElementById('tab-pdb').classList.toggle('hidden',  isHisto);
+  document.getElementById('tab-btn-histo').classList.toggle('active',  isHisto);
+  document.getElementById('tab-btn-pdb').classList.toggle('active',   !isHisto);
+  if (!isHisto) initPDBViewer();
+}
+
+// ── PDB viewer state ────────────────────────────────
+let nglStage         = null;
+let pdbFiles         = [];
+let pdbActive        = null;       // {name}
+let pdbComponents    = [];         // [{name, comp}]
+let pdbRepr          = 'cartoon';
+let pdbColor         = 'chainname';
+let pdbViewMode      = 'single';   // 'single' | 'compare'
+let pdbSpin          = false;
+let pdbInitialized   = false;
+let pdbBackground    = '#0a0a14';
+
+const COMPARE_COLORS = { 'PALB2_WT.pdb': '#06b6d4', 'PALB2_MT.pdb': '#ef4444' };
+
+async function initPDBViewer() {
+  if (pdbInitialized) {
+    if (nglStage) nglStage.handleResize();
+    return;
+  }
+  pdbInitialized = true;
+
+  if (typeof NGL === 'undefined') {
+    document.getElementById('pdb-file-list').innerHTML =
+      '<div class="text-xs text-red-400">No se pudo cargar NGL Viewer (revisa la conexión).</div>';
+    return;
+  }
+
+  nglStage = new NGL.Stage('ngl-viewport', {
+    backgroundColor: pdbBackground,
+    quality: 'medium',
+    impostor: true,
+  });
+  window.addEventListener('resize', () => nglStage.handleResize());
+
+  // Cargar lista de PDBs disponibles
+  try {
+    const r = await fetch('/api/pdb/list');
+    const d = await r.json();
+    pdbFiles = d.files || [];
+    renderPDBFileList();
+    if (pdbFiles.length) loadPDB(pdbFiles[0]);
+  } catch (err) {
+    document.getElementById('pdb-file-list').innerHTML =
+      '<div class="text-xs text-red-400">Error al listar archivos PDB.</div>';
+  }
+}
+
+function renderPDBFileList() {
+  const list = document.getElementById('pdb-file-list');
+  if (!pdbFiles.length) {
+    list.innerHTML = '<div class="text-xs text-gray-600">No hay archivos en /PDB</div>';
+    return;
+  }
+  list.innerHTML = '';
+  pdbFiles.forEach(name => {
+    const div = document.createElement('div');
+    div.className = 'pdb-file-item';
+    div.dataset.name = name;
+    if (pdbActive && pdbActive.name === name) div.classList.add('active');
+    div.innerHTML = `
+      <div class="flex items-center justify-between">
+        <span class="text-sm text-gray-100 font-medium">${name.replace('.pdb','')}</span>
+        <svg class="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+          <path d="M9 5l7 7-7 7"/>
+        </svg>
+      </div>
+      <div class="text-[10px] text-gray-500 mt-0.5 font-mono">${name}</div>`;
+    div.onclick = () => loadPDB(name);
+    list.appendChild(div);
+  });
+}
+
+function setActiveFileHighlight() {
+  document.querySelectorAll('#pdb-file-list .pdb-file-item').forEach(el => {
+    el.classList.toggle('active', pdbActive && el.dataset.name === pdbActive.name);
+  });
+}
+
+async function loadPDB(name) {
+  if (!nglStage) return;
+  showPDBLoader(true);
+  try {
+    if (pdbViewMode === 'compare') {
+      await loadCompareWTvsMT();
+    } else {
+      pdbActive = { name };
+      nglStage.removeAllComponents();
+      pdbComponents = [];
+      const url = `/api/pdb/file/${encodeURIComponent(name)}`;
+      const comp = await nglStage.loadFile(url, { ext: 'pdb', defaultRepresentation: false });
+      pdbComponents.push({ name, comp });
+      applyRepresentations();
+      nglStage.autoView(800);
+      showActiveBadge(name);
+      setActiveFileHighlight();
+      loadPDBInfo(name);
+      document.getElementById('pdb-legend').classList.add('hidden');
+      document.getElementById('pdb-placeholder').classList.add('hidden');
+    }
+  } catch (err) {
+    console.error(err);
+    alert('Error cargando PDB: ' + err.message);
+  } finally {
+    showPDBLoader(false);
+  }
+}
+
+async function loadCompareWTvsMT() {
+  const both = ['PALB2_WT.pdb', 'PALB2_MT.pdb'].filter(f => pdbFiles.includes(f));
+  if (both.length < 2) {
+    alert('Se necesitan PALB2_WT.pdb y PALB2_MT.pdb para comparar.');
+    pdbViewMode = 'single';
+    document.getElementById('mode-single').classList.add('active');
+    document.getElementById('mode-compare').classList.remove('active');
+    return;
+  }
+  pdbActive = { name: 'WT + MT (superpuestos)' };
+  nglStage.removeAllComponents();
+  pdbComponents = [];
+  for (const name of both) {
+    const url = `/api/pdb/file/${encodeURIComponent(name)}`;
+    const comp = await nglStage.loadFile(url, { ext: 'pdb', defaultRepresentation: false });
+    pdbComponents.push({ name, comp });
+  }
+  applyRepresentations();
+  // Superponer estructuras
+  if (pdbComponents.length === 2) {
+    try {
+      const sel = '*';
+      pdbComponents[1].comp.superpose(pdbComponents[0].comp, false, sel);
+    } catch (e) { /* superposition opcional */ }
+  }
+  nglStage.autoView(800);
+  showActiveBadge('PALB2_WT vs PALB2_MT');
+  document.getElementById('pdb-legend').classList.remove('hidden');
+  document.getElementById('pdb-placeholder').classList.add('hidden');
+  setActiveFileHighlight();
+  loadCompareInfo();
+}
+
+function applyRepresentations() {
+  const showHet   = document.getElementById('opt-hetatm').checked;
+  const showWater = document.getElementById('opt-water').checked;
+  const highQ     = document.getElementById('opt-quality').checked;
+
+  pdbComponents.forEach(({ name, comp }) => {
+    comp.removeAllRepresentations();
+    const isCompare = pdbViewMode === 'compare';
+    const params = {
+      sele: 'polymer',
+      quality: highQ ? 'high' : 'medium',
+    };
+    if (isCompare && COMPARE_COLORS[name]) {
+      params.color = COMPARE_COLORS[name];
+    } else {
+      params.colorScheme = pdbColor;
+    }
+    comp.addRepresentation(pdbRepr, params);
+
+    if (showHet) {
+      comp.addRepresentation('ball+stick', {
+        sele: 'hetero and not water',
+        colorScheme: 'element',
+        quality: highQ ? 'high' : 'medium',
+      });
+    }
+    if (showWater) {
+      comp.addRepresentation('ball+stick', {
+        sele: 'water',
+        color: '#3b82f6',
+        scale: 0.4,
+      });
+    }
+  });
+}
+
+function setRepresentation(repr) {
+  pdbRepr = repr;
+  document.querySelectorAll('[data-repr]').forEach(b => {
+    b.classList.toggle('active', b.dataset.repr === repr);
+  });
+  applyRepresentations();
+}
+
+function setColorScheme(scheme) {
+  pdbColor = scheme;
+  applyRepresentations();
+}
+
+function setBackground(color) {
+  pdbBackground = color;
+  if (nglStage) nglStage.setParameters({ backgroundColor: color });
+  ['bg-dark','bg-light','bg-black','bg-white'].forEach(id => {
+    document.getElementById(id).classList.remove('active');
+  });
+  const map = { '#0a0a14': 'bg-dark', '#f3f4f6': 'bg-light', '#000000': 'bg-black', '#ffffff': 'bg-white' };
+  if (map[color]) document.getElementById(map[color]).classList.add('active');
+}
+
+function setViewMode(mode) {
+  pdbViewMode = mode;
+  document.getElementById('mode-single').classList.toggle('active',  mode === 'single');
+  document.getElementById('mode-compare').classList.toggle('active', mode === 'compare');
+  if (mode === 'compare') {
+    loadCompareWTvsMT();
+  } else if (pdbActive && pdbFiles.includes(pdbActive.name)) {
+    loadPDB(pdbActive.name);
+  } else if (pdbFiles.length) {
+    loadPDB(pdbFiles[0]);
+  }
+}
+
+function rerender() {
+  if (pdbComponents.length) applyRepresentations();
+}
+
+function recenterView() {
+  if (nglStage) nglStage.autoView(600);
+}
+
+function toggleSpin() {
+  if (!nglStage) return;
+  pdbSpin = !pdbSpin;
+  nglStage.setSpin(pdbSpin);
+  document.getElementById('spin-btn').classList.toggle('active', pdbSpin);
+}
+
+function screenshotPDB() {
+  if (!nglStage) return;
+  nglStage.makeImage({ factor: 2, antialias: true, trim: false, transparent: false })
+    .then(blob => {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `pdb_${(pdbActive && pdbActive.name || 'structure').replace(/\W+/g,'_')}_${Date.now()}.png`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    });
+}
+
+function fullscreenPDB() {
+  const el = document.getElementById('ngl-viewport');
+  if (!document.fullscreenElement) {
+    el.requestFullscreen?.();
+  } else {
+    document.exitFullscreen?.();
+  }
+}
+
+function showPDBLoader(show) {
+  document.getElementById('pdb-loader').classList.toggle('hidden', !show);
+}
+
+function showActiveBadge(text) {
+  const el = document.getElementById('pdb-active-badge');
+  el.textContent = text;
+  el.classList.remove('hidden');
+}
+
+async function loadPDBInfo(name) {
+  const content = document.getElementById('pdb-info-content');
+  content.innerHTML = '<div class="text-xs text-gray-600">Cargando metadatos…</div>';
+  try {
+    const r = await fetch(`/api/pdb/info/${encodeURIComponent(name)}`);
+    const d = await r.json();
+    content.innerHTML = renderInfoBlock(d);
+  } catch {
+    content.innerHTML = '<div class="text-xs text-red-400">No se pudo obtener información.</div>';
+  }
+}
+
+async function loadCompareInfo() {
+  const content = document.getElementById('pdb-info-content');
+  content.innerHTML = '<div class="text-xs text-gray-600">Cargando metadatos…</div>';
+  try {
+    const [wt, mt] = await Promise.all([
+      fetch('/api/pdb/info/PALB2_WT.pdb').then(r => r.json()),
+      fetch('/api/pdb/info/PALB2_MT.pdb').then(r => r.json()),
+    ]);
+    content.innerHTML = `
+      <div class="text-[11px] uppercase tracking-wider text-cyan-400 mb-1">PALB2_WT</div>
+      ${renderInfoBlock(wt)}
+      <hr class="border-[#1e1e35] my-3"/>
+      <div class="text-[11px] uppercase tracking-wider text-red-400 mb-1">PALB2_MT</div>
+      ${renderInfoBlock(mt)}`;
+  } catch {
+    content.innerHTML = '<div class="text-xs text-red-400">No se pudo obtener información.</div>';
+  }
+}
+
+function renderInfoBlock(d) {
+  if (d.error) return `<div class="text-xs text-red-400">${d.error}</div>`;
+  const rows = [
+    ['Archivo',   d.name],
+    ['Tamaño',    d.size_kb + ' KB'],
+    ['Modelos',   d.models],
+    ['Cadenas',   d.chains + (d.chain_ids?.length ? ` (${d.chain_ids.join(', ')})` : '')],
+    ['Residuos',  d.residues],
+    ['Átomos',    d.atoms],
+    ['HETATM',    d.hetatm],
+  ];
+  return rows.map(([k,v]) => `
+    <div class="flex justify-between items-center">
+      <span class="text-gray-500">${k}</span>
+      <span class="text-gray-200 font-mono text-[11px]">${v}</span>
+    </div>`).join('');
+}
+</script>
+</body>
+</html>
